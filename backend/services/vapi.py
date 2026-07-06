@@ -170,7 +170,15 @@ async def create_or_update_assistant(
         return resp.json()["id"]
 
 
-async def trigger_call(phone_number: str, assistant_id: str) -> tuple[str, str, int, int]:
+def build_prompt_overrides(system_prompt: str) -> dict:
+    """Per-call assistantOverrides carrying the freshly injected system prompt (date, lead info).
+    Sent inline on /call/phone so there is no PATCH-propagation window before dialing."""
+    return {"model": _build_model_block(system_prompt)}
+
+
+async def trigger_call(
+    phone_number: str, assistant_id: str, assistant_overrides: dict | None = None
+) -> tuple[str, str, int, int]:
     """Returns (call_id, caller_display_number, pool_index_1based, pool_size)."""
     phone_id, caller_number, pool_idx, pool_size = _pick_from_pool(phone_number)
     label = f"Twilio (intl)" if pool_idx == 0 else f"pool {pool_idx}/{pool_size}"
@@ -181,6 +189,8 @@ async def trigger_call(phone_number: str, assistant_id: str) -> tuple[str, str, 
         "phoneNumberId": phone_id,
         "customer": {"number": phone_number},
     }
+    if assistant_overrides:
+        payload["assistantOverrides"] = assistant_overrides
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             "https://api.vapi.ai/call/phone",
@@ -217,7 +227,8 @@ async def end_call(call_id: str) -> None:
             raise Exception(f"Vapi {resp.status_code}: {resp.text}")
 
 
-async def get_call_status(call_id: str) -> str:
+async def get_call_status(call_id: str) -> tuple[str, str]:
+    """Returns (status, ended_reason). ended_reason is "" until the call ends."""
     headers = {"Authorization": f"Bearer {settings.vapi_api_key}"}
     async with httpx.AsyncClient() as client:
         resp = await client.get(
@@ -227,7 +238,7 @@ async def get_call_status(call_id: str) -> str:
         )
         resp.raise_for_status()
         data = resp.json()
-        return data.get("status", "unknown")
+        return data.get("status", "unknown"), data.get("endedReason") or ""
 
 
 async def get_call(call_id: str) -> dict:

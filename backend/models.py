@@ -89,6 +89,7 @@ class CallLog(BaseModel):
     latency_ms: Optional[float] = None
     vapi_call_id: Optional[str] = None
     is_booked: bool = False
+    ended_reason: Optional[str] = None
 
 
 class Agent(BaseModel):

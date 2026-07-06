@@ -21,6 +21,41 @@ call_logs: list[CallLog] = []
 # Guards against concurrent duplicate log creation (webhook + SSE arriving at the same time)
 _creating_log_for: set[str] = set()
 
+# call_id → original trigger request + attempt number, so the SSE stream can auto-redial
+# once when the carrier drops the answer signal (endedReason=customer-did-not-answer)
+_call_attempts: dict[str, dict] = {}
+MAX_CALL_ATTEMPTS = 2
+
+
+# endedReasons that always mean the call never became a conversation
+HARD_FAILURE_REASONS = {
+    "customer-did-not-answer": (
+        "Failed — the carrier never reported the call as answered, so the agent was never "
+        "connected. The lead may have picked up into dead air. Retrying usually works."
+    ),
+    "customer-busy": "Failed — the line was busy.",
+    "twilio-failed-to-connect-call": "Failed — Twilio could not connect the call.",
+}
+DEAD_AIR_MESSAGE = (
+    "Failed — the call connected but the audio path was dead: the agent's greeting was cut off "
+    "and the caller was never heard. Carrier/media issue, not the agent."
+)
+
+
+def classify_failure(ended_reason: str, transcript: str) -> Optional[str]:
+    """Returns a human-readable failure message, or None if the call was a real conversation.
+    silence-timed-out only counts as a failure when the caller was never transcribed —
+    a normal conversation can also end by silence."""
+    if not ended_reason:
+        return None
+    if ended_reason in HARD_FAILURE_REASONS:
+        return HARD_FAILURE_REASONS[ended_reason]
+    if ended_reason.startswith("call.start.error"):
+        return f"Failed — the call could not be started ({ended_reason})."
+    if ended_reason == "silence-timed-out" and "User:" not in (transcript or ""):
+        return DEAD_AIR_MESSAGE
+    return None
+
 
 PHONE_PREFIX_TIMEZONE = {
     "+972": "Asia/Jerusalem",
@@ -79,57 +114,59 @@ def _refresh_prompt(system_prompt: str, phone: str, lead_name: Optional[str] = N
     return updated
 
 
+async def _do_trigger(req: TriggerCallRequest, attempt: int = 1) -> dict:
+    """Dial a call. The refreshed system prompt (current date, lead info) is sent as
+    per-call assistantOverrides — no assistant PATCH, no propagation window, no sleep."""
+    # Find session in memory first, fall back to DB
+    matched_state = None
+    for state in builder_service.sessions.values():
+        if state.get("vapi_assistant_id") == req.assistant_id and state.get("config"):
+            matched_state = state
+            break
+    if not matched_state:
+        try:
+            from database import load_all_agents
+            for state in load_all_agents().values():
+                if state.get("vapi_assistant_id") == req.assistant_id and state.get("config"):
+                    matched_state = state
+                    break
+        except Exception:
+            pass
+
+    assistant_overrides = None
+    if matched_state:
+        config = dict(matched_state["config"])
+        refreshed_prompt = _refresh_prompt(
+            config["system_prompt"],
+            req.phone_number,
+            lead_name=req.lead_name,
+            lead_email=req.lead_email,
+        )
+        assistant_overrides = vapi_service.build_prompt_overrides(refreshed_prompt)
+        logger.warning(
+            "trigger_call: session FOUND assistant_id=%s lead_provided=%s attempt=%d",
+            req.assistant_id, bool(req.lead_name or req.lead_email), attempt,
+        )
+    else:
+        known_ids = [s.get("vapi_assistant_id") for s in builder_service.sessions.values()]
+        logger.warning(
+            "trigger_call: NO session found for assistant_id=%s — ids in memory: %s",
+            req.assistant_id, known_ids,
+        )
+
+    call_id, caller_number, pool_idx, pool_size = await vapi_service.trigger_call(
+        req.phone_number,
+        req.assistant_id,
+        assistant_overrides=assistant_overrides,
+    )
+    _call_attempts[call_id] = {"req": req, "attempt": attempt}
+    return {"call_id": call_id, "caller_number": caller_number, "pool_index": pool_idx, "pool_size": pool_size}
+
+
 @router.post("/calls/trigger")
 async def trigger_call(req: TriggerCallRequest) -> dict:
     try:
-        # Find session in memory first, fall back to DB
-        matched_state = None
-        for state in builder_service.sessions.values():
-            if state.get("vapi_assistant_id") == req.assistant_id and state.get("config"):
-                matched_state = state
-                break
-        if not matched_state:
-            try:
-                from database import load_all_agents
-                for state in load_all_agents().values():
-                    if state.get("vapi_assistant_id") == req.assistant_id and state.get("config"):
-                        matched_state = state
-                        break
-            except Exception:
-                pass
-
-        if matched_state:
-            config = dict(matched_state["config"])
-            refreshed_prompt = _refresh_prompt(
-                config["system_prompt"],
-                req.phone_number,
-                lead_name=req.lead_name,
-                lead_email=req.lead_email,
-            )
-            config["system_prompt"] = refreshed_prompt
-            logger.warning(
-                "trigger_call: session FOUND assistant_id=%s lead_provided=%s",
-                req.assistant_id, bool(req.lead_name or req.lead_email),
-            )
-            try:
-                from models import VapiAssistantConfig
-                await vapi_service.create_or_update_assistant(VapiAssistantConfig(**config), req.assistant_id)
-                logger.warning("trigger_call: PATCH ok")
-            except Exception as patch_err:
-                logger.warning("trigger_call: PATCH failed (%s)", patch_err)
-            await asyncio.sleep(2)  # give Vapi time to propagate the assistant update before dialing
-        else:
-            known_ids = [s.get("vapi_assistant_id") for s in builder_service.sessions.values()]
-            logger.warning(
-                "trigger_call: NO session found for assistant_id=%s — ids in memory: %s",
-                req.assistant_id, known_ids,
-            )
-
-        call_id, caller_number, pool_idx, pool_size = await vapi_service.trigger_call(
-            req.phone_number,
-            req.assistant_id,
-        )
-        return {"call_id": call_id, "caller_number": caller_number, "pool_index": pool_idx, "pool_size": pool_size}
+        return await _do_trigger(req)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -210,14 +247,20 @@ def _extract_call_fields(data: dict) -> dict:
         "latency_ms": latency_ms,
         "call_date": call_date,
         "vapi_analysis": data.get("analysis") or {},
+        "ended_reason": data.get("endedReason") or "",
     }
 
 
 async def _build_log_from_fields(fields: dict, call_id: str) -> CallLog:
     transcript = fields["transcript"]
     vapi_analysis = fields["vapi_analysis"]
+    ended_reason = fields.get("ended_reason") or ""
+    failure_message = classify_failure(ended_reason, transcript)
 
-    if isinstance(vapi_analysis, dict) and vapi_analysis.get("summary"):
+    if failure_message:
+        outcome = failure_message
+        sentiment = "Neutral"
+    elif isinstance(vapi_analysis, dict) and vapi_analysis.get("summary"):
         outcome = vapi_analysis["summary"]
         # Map successEvaluation → sentiment hint, then refine with Claude
         s = str(vapi_analysis.get("successEvaluation", "")).lower()
@@ -226,7 +269,7 @@ async def _build_log_from_fields(fields: dict, call_id: str) -> CallLog:
         outcome = "Call completed"
         sentiment = "Neutral"
 
-    if transcript:
+    if transcript and not failure_message:
         try:
             from routers.webhooks import _analyze_transcript, _booked_call_ids
             result = await _analyze_transcript(transcript)
@@ -253,6 +296,7 @@ async def _build_log_from_fields(fields: dict, call_id: str) -> CallLog:
         latency_ms=fields["latency_ms"],
         vapi_call_id=call_id,
         is_booked=is_booked,
+        ended_reason=ended_reason or None,
     )
 
 
@@ -299,11 +343,15 @@ async def sync_recent_calls() -> None:
         for call in calls:
             if call.get("status") != "ended":
                 continue
+            if call.get("type") != "outboundPhoneCall":
+                continue  # inbound spam to the pool numbers is not our agents' work
             cid = call.get("id")
             if not cid or cid in known_ids:
                 continue
-            if not call.get("transcript") and not (call.get("analysis") or {}).get("summary"):
-                continue  # skip empty/failed calls
+            has_content = call.get("transcript") or (call.get("analysis") or {}).get("summary")
+            is_failed = classify_failure(call.get("endedReason") or "", call.get("transcript") or "")
+            if not has_content and not is_failed:
+                continue  # skip empty non-failed calls (e.g. cancelled before ringing)
             fields = _extract_call_fields(call)
             log = await _build_log_from_fields(fields, cid)
             call_logs.append(log)
@@ -333,18 +381,52 @@ async def end_call(call_id: str):
 async def stream_call_status(call_id: str) -> StreamingResponse:
     async def generate():
         terminal = {"ended", "failed", "error"}
+        current_id = call_id
         while True:
+            ended_reason = ""
             try:
-                status = await vapi_service.get_call_status(call_id)
+                status, ended_reason = await vapi_service.get_call_status(current_id)
             except Exception:
                 status = "error"
-            yield f"data: {json.dumps({'status': status})}\n\n"
-            if status in terminal:
-                # Wait a moment for the Vapi webhook to arrive, then fallback
-                await asyncio.sleep(5)
-                await _create_log_from_vapi(call_id)
-                break
-            await asyncio.sleep(2)
+
+            if status not in terminal:
+                yield f"data: {json.dumps({'status': status, 'call_id': current_id})}\n\n"
+                await asyncio.sleep(2)
+                continue
+
+            # Terminal: fetch the full call once for transcript-aware failure classification
+            transcript = ""
+            try:
+                data = await vapi_service.get_call(current_id)
+                ended_reason = data.get("endedReason") or ended_reason
+                transcript = data.get("transcript") or ""
+            except Exception:
+                pass
+            failure_message = classify_failure(ended_reason, transcript)
+
+            # Carrier dropped the answer signal → the agent was never connected.
+            # History shows an immediate redial almost always succeeds, so retry once.
+            meta = _call_attempts.get(current_id)
+            if (
+                ended_reason == "customer-did-not-answer"
+                and meta
+                and meta["attempt"] < MAX_CALL_ATTEMPTS
+            ):
+                await _create_log_from_vapi(current_id)  # keep the failed attempt visible in logs
+                try:
+                    result = await _do_trigger(meta["req"], attempt=meta["attempt"] + 1)
+                    current_id = result["call_id"]
+                    yield f"data: {json.dumps({'status': 'retrying', 'call_id': current_id, 'ended_reason': ended_reason, 'failure_message': failure_message})}\n\n"
+                    await asyncio.sleep(2)
+                    continue
+                except Exception:
+                    pass  # redial failed — fall through and report the original failure
+
+            yield f"data: {json.dumps({'status': status, 'call_id': current_id, 'ended_reason': ended_reason, 'failure_message': failure_message})}\n\n"
+            # Wait a moment for the Vapi webhook to arrive, then fallback
+            await asyncio.sleep(5)
+            await _create_log_from_vapi(current_id)
+            break
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 

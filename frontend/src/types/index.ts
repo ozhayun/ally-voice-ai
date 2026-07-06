@@ -18,12 +18,20 @@ export interface ChatMessage {
   config?: VapiAssistantConfig
 }
 
-export type CallStatus = 'idle' | 'connecting' | 'in-progress' | 'ended' | 'failed' | 'error'
+export type CallStatus = 'idle' | 'connecting' | 'in-progress' | 'retrying' | 'ended' | 'failed' | 'error'
+
+export interface CallStatusEvent {
+  status: CallStatus
+  call_id?: string
+  ended_reason?: string
+  failure_message?: string | null
+}
 
 export interface CallLog {
   id: string
   vapi_call_id: string | null
   is_booked: boolean
+  ended_reason?: string | null
   agent_name: string
   phone_number: string
   date: string

@@ -179,8 +179,12 @@ async def vapi_webhook(request: Request) -> dict:
             if latencies:
                 latency_ms = round(min(latencies) * 1000, 1)
 
-            sentiment_result = SentimentResult(sentiment="Neutral", outcome="Call completed")
-            if transcript:
+            ended_reason = message.get("endedReason") or call_obj.get("endedReason") or ""
+            from routers.calls import classify_failure
+            failure_message = classify_failure(ended_reason, transcript)
+
+            sentiment_result = SentimentResult(sentiment="Neutral", outcome=failure_message or "Call completed")
+            if transcript and not failure_message:
                 try:
                     sentiment_result = await _analyze_transcript(transcript)
                 except Exception:
@@ -195,6 +199,7 @@ async def vapi_webhook(request: Request) -> dict:
                 existing.sentiment = sentiment_result.sentiment
                 existing.outcome = sentiment_result.outcome
                 existing.latency_ms = latency_ms or existing.latency_ms
+                existing.ended_reason = ended_reason or existing.ended_reason
                 if vapi_call_id in _booked_call_ids:
                     existing.is_booked = True
                     _booked_call_ids.discard(vapi_call_id)
@@ -221,6 +226,7 @@ async def vapi_webhook(request: Request) -> dict:
                 latency_ms=latency_ms,
                 vapi_call_id=vapi_call_id,
                 is_booked=is_booked,
+                ended_reason=ended_reason or None,
             )
             call_logs.append(log)
             try:

@@ -26,18 +26,23 @@ class CallLogRecord(SQLModel, table=True):
     latency_ms: Optional[float] = None
     vapi_call_id: Optional[str] = None
     is_booked: bool = False
+    ended_reason: Optional[str] = None
 
 
 def create_db() -> None:
     SQLModel.metadata.create_all(engine)
-    # Migrate existing DBs that predate is_booked column
-    try:
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE calllogrecord ADD COLUMN is_booked INTEGER NOT NULL DEFAULT 0"))
-            conn.commit()
-    except Exception:
-        pass  # column already exists
+    # Migrate existing DBs that predate later columns
+    from sqlalchemy import text
+    for ddl in (
+        "ALTER TABLE calllogrecord ADD COLUMN is_booked INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE calllogrecord ADD COLUMN ended_reason VARCHAR",
+    ):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(ddl))
+                conn.commit()
+        except Exception:
+            pass  # column already exists
 
 
 # --- Agent (session) persistence ---

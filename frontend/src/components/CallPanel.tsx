@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Phone, PhoneOff, Loader2, Smartphone, BarChart2 } from 'lucide-react'
+import { Phone, PhoneOff, Loader2, Smartphone, BarChart2, AlertCircle } from 'lucide-react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { cn, formatPhone, toE164, formatCost } from '@/lib/utils'
@@ -31,6 +31,8 @@ export function CallPanel() {
   const callId = useCallStore((s) => s.callId)
   const setCallId = useCallStore((s) => s.setCallId)
   const setCallStatus = useCallStore((s) => s.setCallStatus)
+  const failureMessage = useCallStore((s) => s.failureMessage)
+  const setFailureMessage = useCallStore((s) => s.setFailureMessage)
   const reset = useCallStore((s) => s.reset)
   const [ending, setEnding] = useState(false)
 
@@ -73,7 +75,10 @@ export function CallPanel() {
 
   const triggerMutation = useMutation({
     mutationFn: () => api.triggerCall(toE164(phone), vapiAssistantId!, leadName.trim() || undefined, leadEmail.trim() || undefined),
-    onMutate: () => setCallStatus('connecting'),
+    onMutate: () => {
+      setFailureMessage(null)
+      setCallStatus('connecting')
+    },
     onSuccess: (data) => {
       setCallId(data.call_id)
       setCallStatus('in-progress')
@@ -92,8 +97,15 @@ export function CallPanel() {
     leadEmail.trim().includes('@') &&
     (phone.startsWith('+') ? phone.replace(/\D/g, '').length >= 7 : phone.replace(/\D/g, '').length >= 10)
 
-  const isActive = callStatus === 'in-progress' || callStatus === 'connecting'
+  const isActive = callStatus === 'in-progress' || callStatus === 'connecting' || callStatus === 'retrying'
   const isIdle = callStatus === 'idle' || callStatus === 'ended' || callStatus === 'failed' || callStatus === 'error'
+
+  const failureTitle = failureMessage?.includes('never reported the call as answered')
+    ? 'Call failed — no answer detected'
+    : failureMessage?.includes('audio path')
+      ? 'Call failed — audio connection lost'
+      : 'Call failed'
+  const failureDetail = failureMessage?.replace(/^Failed — /, '')
 
   return (
     <div className="border-t border-zinc-800 flex flex-col">
@@ -184,9 +196,15 @@ export function CallPanel() {
       {isActive && (
         <div className="mx-4 mb-3 flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3">
           <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[11px] font-bold text-emerald-400 tracking-widest uppercase">
-              {callStatus === 'connecting' ? 'Connecting' : 'In Progress'}
+            <span className={cn(
+              'h-2 w-2 rounded-full animate-pulse',
+              callStatus === 'retrying' ? 'bg-amber-500' : 'bg-emerald-500',
+            )} />
+            <span className={cn(
+              'text-[11px] font-bold tracking-widest uppercase',
+              callStatus === 'retrying' ? 'text-amber-400' : 'text-emerald-400',
+            )}>
+              {callStatus === 'connecting' ? 'Connecting' : callStatus === 'retrying' ? 'No Answer — Retrying' : 'In Progress'}
             </span>
             {callerInfo?.number && (
               <span className="text-[11px] text-zinc-500">
@@ -212,6 +230,27 @@ export function CallPanel() {
               End
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Call failure banner — carrier never connected the call or audio path died */}
+      {failureMessage && !isActive && (
+        <div className="mx-4 mb-3 p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={16} className="mt-0.5 shrink-0 text-red-400" />
+            <div className="flex flex-col gap-0.5">
+              <p className="text-sm font-semibold text-white">{failureTitle}</p>
+              <p className="text-xs text-zinc-400 leading-relaxed">{failureDetail}</p>
+            </div>
+          </div>
+          <button
+            onClick={() => triggerMutation.mutate()}
+            disabled={!canCall || triggerMutation.isPending}
+            className="flex-shrink-0 flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-500 transition-colors disabled:opacity-60"
+          >
+            {triggerMutation.isPending ? <Loader2 size={12} className="animate-spin" /> : <Smartphone size={12} />}
+            Retry Call
+          </button>
         </div>
       )}
 
