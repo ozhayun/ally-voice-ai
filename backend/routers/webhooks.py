@@ -200,6 +200,7 @@ async def vapi_webhook(request: Request) -> dict:
                 existing.outcome = sentiment_result.outcome
                 existing.latency_ms = latency_ms or existing.latency_ms
                 existing.ended_reason = ended_reason or existing.ended_reason
+                existing.is_failed = bool(failure_message) or existing.is_failed
                 if vapi_call_id in _booked_call_ids:
                     existing.is_booked = True
                     _booked_call_ids.discard(vapi_call_id)
@@ -227,6 +228,7 @@ async def vapi_webhook(request: Request) -> dict:
                 vapi_call_id=vapi_call_id,
                 is_booked=is_booked,
                 ended_reason=ended_reason or None,
+                is_failed=bool(failure_message),
             )
             call_logs.append(log)
             try:

@@ -21,7 +21,8 @@ export interface ChatMessage {
 export type CallStatus = 'idle' | 'connecting' | 'in-progress' | 'retrying' | 'ended' | 'failed' | 'error'
 
 export interface CallStatusEvent {
-  status: CallStatus
+  // Backend forwards Vapi's raw dial-phase statuses in addition to our own CallStatus
+  status: CallStatus | 'queued' | 'ringing'
   call_id?: string
   ended_reason?: string
   failure_message?: string | null
@@ -31,6 +32,7 @@ export interface CallLog {
   id: string
   vapi_call_id: string | null
   is_booked: boolean
+  is_failed: boolean
   ended_reason?: string | null
   agent_name: string
   phone_number: string

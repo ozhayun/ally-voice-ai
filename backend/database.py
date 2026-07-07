@@ -27,6 +27,7 @@ class CallLogRecord(SQLModel, table=True):
     vapi_call_id: Optional[str] = None
     is_booked: bool = False
     ended_reason: Optional[str] = None
+    is_failed: bool = False
 
 
 def create_db() -> None:
@@ -36,6 +37,7 @@ def create_db() -> None:
     for ddl in (
         "ALTER TABLE calllogrecord ADD COLUMN is_booked INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE calllogrecord ADD COLUMN ended_reason VARCHAR",
+        "ALTER TABLE calllogrecord ADD COLUMN is_failed INTEGER NOT NULL DEFAULT 0",
     ):
         try:
             with engine.connect() as conn:
@@ -43,6 +45,19 @@ def create_db() -> None:
                 conn.commit()
         except Exception:
             pass  # column already exists
+    # Backfill rows written before is_failed existed. Never-connected calls also carry a
+    # bogus duration (old code measured createdAt→updatedAt, which spans dialing +
+    # Vapi post-processing) — zero it, since the agent never spoke.
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("UPDATE calllogrecord SET is_failed = 1 WHERE outcome LIKE 'Failed —%'"))
+            conn.execute(text(
+                "UPDATE calllogrecord SET duration_seconds = 0 WHERE is_failed = 1 AND ended_reason IN "
+                "('customer-did-not-answer', 'customer-busy', 'twilio-failed-to-connect-call')"
+            ))
+            conn.commit()
+    except Exception:
+        pass
 
 
 # --- Agent (session) persistence ---

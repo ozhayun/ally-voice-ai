@@ -211,16 +211,19 @@ def _extract_call_fields(data: dict) -> dict:
     # Phone
     phone = (data.get("customer") or {}).get("number", "")
 
-    # Duration: durationSeconds is always null from Vapi REST API; calculate from timestamps
+    # Duration: durationSeconds is always null from Vapi REST API; use startedAt→endedAt
+    # (actual talk time). startedAt is null when the carrier never connected the call —
+    # duration is then genuinely 0. createdAt→updatedAt must NOT be used: it includes
+    # dialing time and Vapi's record post-processing (a never-answered call showed 0:55).
     duration = int(data.get("durationSeconds") or 0)
     if not duration:
         try:
-            created = data.get("createdAt", "")
-            updated = data.get("updatedAt", "")
-            if created and updated:
+            started = data.get("startedAt", "")
+            ended = data.get("endedAt", "")
+            if started and ended:
                 from datetime import datetime as _dt
-                t1 = _dt.fromisoformat(created.replace("Z", "+00:00"))
-                t2 = _dt.fromisoformat(updated.replace("Z", "+00:00"))
+                t1 = _dt.fromisoformat(started.replace("Z", "+00:00"))
+                t2 = _dt.fromisoformat(ended.replace("Z", "+00:00"))
                 duration = max(0, int((t2 - t1).total_seconds()))
         except Exception:
             pass
@@ -297,6 +300,7 @@ async def _build_log_from_fields(fields: dict, call_id: str) -> CallLog:
         vapi_call_id=call_id,
         is_booked=is_booked,
         ended_reason=ended_reason or None,
+        is_failed=bool(failure_message),
     )
 
 

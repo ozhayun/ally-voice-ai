@@ -18,6 +18,13 @@ export function useCallStatus(callId: string | null) {
     const es = new EventSource(`/api/calls/status/${callId}`)
     es.onmessage = (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as CallStatusEvent
+      if (data.status === 'queued' || data.status === 'ringing') {
+        // Raw Vapi dial-phase statuses. Show "Connecting", except during an auto-redial:
+        // the redialed call also starts at queued/ringing, and overwriting 'retrying' here
+        // is what made the amber "No Answer — Retrying" state vanish instantly.
+        if (useCallStore.getState().callStatus !== 'retrying') setCallStatus('connecting')
+        return
+      }
       setCallStatus(data.status)
       if (data.status === 'retrying' && data.call_id && data.call_id !== callId) {
         // Backend auto-redialed after the carrier dropped the answer signal.

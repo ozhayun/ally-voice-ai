@@ -239,18 +239,31 @@ export function Logs() {
                       onClick={() => { if (!isConfirming) setSelected({ log, index: globalIndex }) }}
                       className={cn(
                         'border-b border-zinc-800/50 last:border-0 cursor-pointer transition-colors group',
-                        selected?.log.id === log.id
-                          ? 'bg-indigo-600/5 border-l-2 border-l-indigo-600'
-                          : 'hover:bg-zinc-800/30',
+                        log.is_failed
+                          ? selected?.log.id === log.id
+                            ? 'bg-red-500/10 border-l-2 border-l-red-500'
+                            : 'bg-red-500/5 border-l-2 border-l-red-500 hover:bg-red-500/10'
+                          : selected?.log.id === log.id
+                            ? 'bg-indigo-600/5 border-l-2 border-l-indigo-600'
+                            : 'hover:bg-zinc-800/30',
                       )}
                     >
                       <td className="px-6 py-4 text-zinc-600 font-mono text-xs">{globalIndex + 1}</td>
-                      <td className="px-6 py-4 text-zinc-200 font-medium">{log.agent_name}</td>
-                      <td className="px-6 py-4 text-zinc-400 font-mono text-xs">{log.phone_number}</td>
+                      <td className={cn('px-6 py-4 font-medium', log.is_failed ? 'text-red-300' : 'text-zinc-200')}>{log.agent_name}</td>
+                      <td className={cn('px-6 py-4 font-mono text-xs', log.is_failed ? 'text-red-400/80' : 'text-zinc-400')}>{log.phone_number}</td>
                       <td className="px-6 py-4 text-zinc-400">
                         {new Date(log.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                       </td>
-                      <td className="px-6 py-4 text-zinc-400">{formatDuration(log.duration_seconds)}</td>
+                      <td className={cn('px-6 py-4', log.is_failed ? 'text-red-400' : 'text-zinc-400')}>
+                        <span className="inline-flex items-center gap-2">
+                          {formatDuration(log.duration_seconds)}
+                          {log.is_failed && (
+                            <span className="text-[9px] font-bold tracking-wider uppercase text-red-400 bg-red-500/10 border border-red-500/30 rounded px-1.5 py-0.5">
+                              Failed
+                            </span>
+                          )}
+                        </span>
+                      </td>
                       <td className="px-4 py-4 text-right w-16">
                         {isConfirming ? (
                           <div className="flex items-center justify-end gap-2" onClick={e => e.stopPropagation()}>

@@ -90,6 +90,7 @@ class CallLog(BaseModel):
     vapi_call_id: Optional[str] = None
     is_booked: bool = False
     ended_reason: Optional[str] = None
+    is_failed: bool = False
 
 
 class Agent(BaseModel):
