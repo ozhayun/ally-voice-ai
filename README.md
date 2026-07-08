@@ -37,8 +37,8 @@ The user types a natural-language brief ("Call SaaS founders, ask if they have a
 │  ┌─────────────┐   ┌──────────────┐   ┌────────────────────┐  │
 │  │  LangGraph  │   │  Vapi        │   │  SQLModel /        │  │
 │  │  Builder    │   │  Service     │   │  SQLite            │  │
-│  │  State      │   │  (PATCH +    │   │  (call logs,       │  │
-│  │  Machine    │   │   trigger)   │   │   agent state)     │  │
+│  │  State      │   │  (overrides  │   │  (call logs,       │  │
+│  │  Machine    │   │  + trigger)  │   │   agent state)     │  │
 │  └──────┬──────┘   └──────┬───────┘   └────────────────────┘  │
 │         │                 │                                   │
 └─────────┼─────────────────┼─────────────────────────────────-─┘
@@ -72,11 +72,12 @@ The user types a natural-language brief ("Call SaaS founders, ask if they have a
 ### Request Flow - Call
 
 1. `POST /api/calls/trigger` → system prompt refreshed with lead info (injected at top, sanitized)
-2. Vapi assistant PATCHed with updated prompt → call triggered via `POST /call/phone`
+2. Refreshed prompt sent as per-call `assistantOverrides` on `POST /call/phone` (no PATCH before dial)
 3. Vapi calls the lead; agent speaks using Cartesia TTS + Deepgram STT
-4. Tool calls (`qualify_lead`, `book_meeting`) POST to `/api/webhooks/vapi` (HMAC-verified)
+4. Tool calls (`qualify_lead`, `book_meeting`) POST to `/api/webhooks/vapi` (HMAC-verified when `VAPI_WEBHOOK_SECRET` is set)
 5. `book_meeting` → Cal.com REST v2 → meeting confirmed
-6. `end-of-call-report` webhook → transcript analyzed by Claude → log persisted
+6. SSE streams call status with `endedReason` / `failure_message`; auto-redial once on `customer-did-not-answer`
+7. `end-of-call-report` webhook → transcript analyzed by Claude → log persisted (`is_failed` for carrier failures)
 
 ---
 
