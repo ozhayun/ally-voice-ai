@@ -43,7 +43,8 @@ async def get_agents() -> list[Agent]:
                 booked_count = row[0] if row else 0
         except Exception:
             booked_count = sum(1 for l in agent_logs if l.is_booked)
-        success_rate = round(booked_count / len(agent_logs) * 100, 1) if agent_logs else None
+        attempted_logs = [l for l in agent_logs if not l.is_failed]
+        success_rate = round(booked_count / len(attempted_logs) * 100, 1) if attempted_logs else None
 
         agents.append(
             Agent(
