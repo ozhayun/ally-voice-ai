@@ -1,6 +1,6 @@
 # Ally - Voice AI Builder
 
-> **Alta AI Engineer Home Assignment** · Submitted by Oz Hayun · July 2026
+> **A personal project by Oz Hayun** · July 2026
 
 ---
 
